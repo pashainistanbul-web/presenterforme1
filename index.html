@@ -249,7 +249,11 @@
 
         function updateTransform() {
             const vectorLayer = document.getElementById('vector-layer');
-            vectorLayer.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+            if (window.innerWidth < window.innerHeight) {
+                vectorLayer.style.transform = `translate(0px, ${window.innerHeight}px) rotate(-90deg) translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+            } else {
+                vectorLayer.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+            }
             drawAll(); // Redraw vector strokes dynamically!
             
             if (typeof broadcastSync === 'function') {
@@ -257,20 +261,23 @@
             }
         }
 
-        function getCoordinates(e) {
-            let clientX, clientY;
-            if (e.touches && e.touches.length > 0) {
-                clientX = e.touches[0].clientX;
-                clientY = e.touches[0].clientY;
-            } else {
-                clientX = e.clientX;
-                clientY = e.clientY;
+        function getVirtualPos(p) {
+            // Treat mobile portrait orientation as landscape rotated by 90 degrees
+            // Top of phone = Right of Laptop, Bottom = Left, Left = Top, Right = Bottom.
+            if (window.innerWidth < window.innerHeight) {
+                return { x: window.innerHeight - p.clientY, y: p.clientX };
             }
+            return { x: p.clientX, y: p.clientY };
+        }
+
+        function getCoordinates(e) {
+            let p = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
+            let vPos = getVirtualPos(p);
             
             // Convert exact screen pixel to logical WORLD coordinate based on zoom and pan
             return {
-                x: (clientX - state.panX) / state.zoom,
-                y: (clientY - state.panY) / state.zoom
+                x: (vPos.x - state.panX) / state.zoom,
+                y: (vPos.y - state.panY) / state.zoom
             };
         }
 
@@ -281,6 +288,10 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
             ctx.scale(dpr, dpr);
+            if (window.innerWidth < window.innerHeight) {
+                ctx.translate(0, window.innerHeight);
+                ctx.rotate(-Math.PI / 2);
+            }
             ctx.translate(state.panX, state.panY);
             ctx.scale(state.zoom, state.zoom);
 
@@ -344,20 +355,22 @@
                 if (state.pointers.size >= 2) {
                     // Setup smooth pinch-to-zoom
                     const pts = Array.from(state.pointers.values());
-                    const p1 = pts[0];
-                    const p2 = pts[1];
-                    state.pinchStartDist = Math.hypot(p1.clientX - p2.clientX, p1.clientY - p2.clientY);
+                    const p1 = getVirtualPos(pts[0]);
+                    const p2 = getVirtualPos(pts[1]);
+                    
+                    state.pinchStartDist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
                     state.pinchStartZoom = state.zoom;
                     
-                    state.pinchCenterX = (p1.clientX + p2.clientX) / 2;
-                    state.pinchCenterY = (p1.clientY + p2.clientY) / 2;
+                    state.pinchCenterX = (p1.x + p2.x) / 2;
+                    state.pinchCenterY = (p1.y + p2.y) / 2;
                     
                     state.panStartX = state.pinchCenterX - state.panX;
                     state.panStartY = state.pinchCenterY - state.panY;
                 } else {
                     // Standard single-pointer pan
-                    state.panStartX = e.clientX - state.panX;
-                    state.panStartY = e.clientY - state.panY;
+                    const vPos = getVirtualPos(e);
+                    state.panStartX = vPos.x - state.panX;
+                    state.panStartY = vPos.y - state.panY;
                 }
                 
                 canvas.style.cursor = 'grabbing';
@@ -402,8 +415,9 @@
             // If one finger is still down after a pinch, stay in panning mode to avoid drawing streaks
             if (state.pointers.size > 0 && state.isPanning) {
                 const remainingPointer = Array.from(state.pointers.values())[0];
-                state.panStartX = remainingPointer.clientX - state.panX;
-                state.panStartY = remainingPointer.clientY - state.panY;
+                const vPos = getVirtualPos(remainingPointer);
+                state.panStartX = vPos.x - state.panX;
+                state.panStartY = vPos.y - state.panY;
                 return; 
             }
 
@@ -501,22 +515,32 @@
                 
                 // Adjust Pan to zoom directly toward the mouse cursor smoothly
                 const rect = canvas.getBoundingClientRect();
-                const mouseX = e.clientX - rect.left;
-                const mouseY = e.clientY - rect.top;
+                let virtMouseX = e.clientX - rect.left;
+                let virtMouseY = e.clientY - rect.top;
+                
+                if (window.innerWidth < window.innerHeight) {
+                    virtMouseX = window.innerHeight - (e.clientY - rect.top);
+                    virtMouseY = e.clientX - rect.left;
+                }
                 
                 const scaleRatio = state.zoom / oldZoom;
                 
                 // CRITICAL FIX: Include current pan offset in the calculation so it anchors exactly 
                 // to your cursor in world space, eliminating the diagonal drift!
-                state.panX -= (mouseX - state.panX) * (scaleRatio - 1);
-                state.panY -= (mouseY - state.panY) * (scaleRatio - 1);
+                state.panX -= (virtMouseX - state.panX) * (scaleRatio - 1);
+                state.panY -= (virtMouseY - state.panY) * (scaleRatio - 1);
                 
                 updateTransform();
                 triggerHighResRender(); // Schedule high-res redraw
             } else {
                 // Standard Trackpad 2-finger pan / Mouse wheel pan
-                state.panX -= e.deltaX;
-                state.panY -= e.deltaY;
+                if (window.innerWidth < window.innerHeight) {
+                    state.panX -= -e.deltaY;
+                    state.panY -= e.deltaX;
+                } else {
+                    state.panX -= e.deltaX;
+                    state.panY -= e.deltaY;
+                }
                 updateTransform();
             }
         }, { passive: false });
@@ -577,11 +601,11 @@
                 if (state.pointers.size >= 2) {
                     // Execute Pinch-to-Zoom
                     const pts = Array.from(state.pointers.values());
-                    const p1 = pts[0];
-                    const p2 = pts[1];
-                    const currentDist = Math.hypot(p1.clientX - p2.clientX, p1.clientY - p2.clientY);
-                    const currentCenterX = (p1.clientX + p2.clientX) / 2;
-                    const currentCenterY = (p1.clientY + p2.clientY) / 2;
+                    const p1 = getVirtualPos(pts[0]);
+                    const p2 = getVirtualPos(pts[1]);
+                    const currentDist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+                    const currentCenterX = (p1.x + p2.x) / 2;
+                    const currentCenterY = (p1.y + p2.y) / 2;
 
                     if (state.pinchStartDist > 0) {
                         const scaleFactor = currentDist / state.pinchStartDist;
@@ -596,8 +620,9 @@
                     }
                 } else {
                     // Standard Single-pointer Pan
-                    state.panX = e.clientX - state.panStartX;
-                    state.panY = e.clientY - state.panStartY;
+                    const vPos = getVirtualPos(e);
+                    state.panX = vPos.x - state.panStartX;
+                    state.panY = vPos.y - state.panStartY;
                     updateTransform();
                 }
                 return;
@@ -750,8 +775,12 @@ imageUpload.addEventListener('change', async (e) => {
                     }
 
                     const rect = canvas.getBoundingClientRect();
-                    const canvasX = ((window.innerWidth / 2) - rect.left) * (canvas.offsetWidth / rect.width);
-                    const canvasY = ((window.innerHeight / 2) - rect.top) * (canvas.offsetHeight / rect.height);
+                    let cx = window.innerWidth / 2;
+                    let cy = window.innerHeight / 2;
+                    if (window.innerWidth < window.innerHeight) { cx = window.innerHeight / 2; cy = window.innerWidth / 2; }
+                    
+                    const canvasX = (cx - rect.left) * (canvas.offsetWidth / rect.width);
+                    const canvasY = (cy - rect.top) * (canvas.offsetHeight / rect.height);
                     
                     const x = canvasX - (drawWidth / 2);
                     const y = canvasY - (drawHeight / 2);
@@ -799,8 +828,12 @@ imageUpload.addEventListener('change', async (e) => {
                     }
 
                     const rect = canvas.getBoundingClientRect();
-                    const canvasX = ((window.innerWidth / 2) - rect.left) * (canvas.offsetWidth / rect.width);
-                    const canvasY = ((window.innerHeight / 2) - rect.top) * (canvas.offsetHeight / rect.height);
+                    let cx = window.innerWidth / 2;
+                    let cy = window.innerHeight / 2;
+                    if (window.innerWidth < window.innerHeight) { cx = window.innerHeight / 2; cy = window.innerWidth / 2; }
+                    
+                    const canvasX = (cx - rect.left) * (canvas.offsetWidth / rect.width);
+                    const canvasY = (cy - rect.top) * (canvas.offsetHeight / rect.height);
                     
                     const x = canvasX - (drawWidth / 2);
                     const y = canvasY - (drawHeight / 2);
