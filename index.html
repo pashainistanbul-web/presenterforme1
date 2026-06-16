@@ -195,8 +195,11 @@
             // Sync variables
             remoteStroke: null,
             peer: null,
-            connection: null,
+            connections: [], // Upgraded to array for multi-user networking
             isSyncing: false,
+            isHost: false,
+            currentRoomId: null,
+            images: [], // Saves dropped images for late joiners
             hostWidth: null,
             hostHeight: null,
 
@@ -872,15 +875,17 @@ imageUpload.addEventListener('change', async (e) => {
 
                     vectorLayer.appendChild(img);
                     
+                    const imageData = {
+                        src: event.target.result,
+                        left: img.style.left,
+                        top: img.style.top,
+                        width: img.style.width,
+                        height: img.style.height
+                    };
+                    state.images.push(imageData); // Save locally for late joiners
+                    
                     if (typeof broadcastSync === 'function') {
-                        broadcastSync({
-                            type: 'IMAGE',
-                            src: event.target.result,
-                            left: img.style.left,
-                            top: img.style.top,
-                            width: img.style.width,
-                            height: img.style.height
-                        });
+                        broadcastSync({ type: 'IMAGE', ...imageData });
                     }
                     
                     showToast('Image added to board');
@@ -978,17 +983,21 @@ imageUpload.addEventListener('change', async (e) => {
 
         function broadcastSync(data) {
             // isSyncing gatekeeper perfectly prevents infinite broadcasting echo loops
-            if (state.connection && state.connection.open && !state.isSyncing) {
+            if (state.connections.length > 0 && !state.isSyncing) {
                 if (data.type === 'PAN_ZOOM') {
                     pendingPanZoom = data;
                     if (!panZoomRAF) {
                         panZoomRAF = requestAnimationFrame(() => {
-                            if (state.connection.open) state.connection.send(pendingPanZoom);
+                            state.connections.forEach(conn => {
+                                if (conn.open) conn.send(pendingPanZoom);
+                            });
                             panZoomRAF = null;
                         });
                     }
                 } else {
-                    state.connection.send(data);
+                    state.connections.forEach(conn => {
+                        if (conn.open) conn.send(data);
+                    });
                 }
             }
         }
@@ -1004,7 +1013,7 @@ imageUpload.addEventListener('change', async (e) => {
         };
 
         btnSync.addEventListener('click', () => {
-            if (state.connection && state.connection.open) {
+            if (state.connections.length > 0) {
                 showToast('Already connected!');
                 return;
             }
@@ -1013,33 +1022,43 @@ imageUpload.addEventListener('change', async (e) => {
             if (!roomName || roomName.trim() === "") return;
 
             // Prefix to avoid global PeerJS collisions with other internet users
-            const globalRoomId = "presenter-sync-room-" + roomName.trim().toLowerCase();
+            state.currentRoomId = "presenter-sync-room-" + roomName.trim().toLowerCase();
             showToast('Searching network...', 2000);
 
+            joinOrHostRoom();
+        });
+
+        function joinOrHostRoom() {
             // Attempt to claim this room name and become the Host
-            state.peer = new Peer(globalRoomId, peerConfig);
+            state.peer = new Peer(state.currentRoomId, peerConfig);
 
             state.peer.on('open', (id) => {
-                showToast(`Room '${roomName}' created! Waiting for other device...`, 4000);
+                state.isHost = true;
+                showToast(`Room active! Waiting for others...`, 4000);
             });
             
             state.peer.on('connection', (conn) => {
                 setupConnection(conn);
-                showToast('Device joined your room!', 3000);
+                showToast('A user joined the room!', 3000);
+                
                 // Host shares the entire canvas state immediately upon a new connection
                 setTimeout(() => {
-                    broadcastSync({ 
-                        type: 'FULL_STATE', strokes: state.strokes, bgColor: state.bgColor, 
-                        panX: state.panX, panY: state.panY, zoom: state.zoom,
-                        hostWidth: window.innerWidth, hostHeight: window.innerHeight 
-                    });
+                    if (conn.open) {
+                        conn.send({ 
+                            type: 'FULL_STATE', strokes: state.strokes, bgColor: state.bgColor, 
+                            panX: state.panX, panY: state.panY, zoom: state.zoom,
+                            hostWidth: window.innerWidth, hostHeight: window.innerHeight,
+                            images: state.images // Send all accumulated images!
+                        });
+                    }
                 }, 500);
             });
 
             // If the name is already claimed, the room exists! Join it as a Client.
             state.peer.on('error', (err) => {
                 if (err.type === 'unavailable-id') {
-                    showToast(`Room found! Connecting to '${roomName}'...`);
+                    state.isHost = false;
+                    showToast(`Room found! Connecting...`);
                     
                     // Destroy the failed host attempt
                     state.peer.destroy();
@@ -1048,7 +1067,7 @@ imageUpload.addEventListener('change', async (e) => {
                     setTimeout(() => {
                         state.peer = new Peer(peerConfig);
                         state.peer.on('open', () => {
-                            const conn = state.peer.connect(globalRoomId);
+                            const conn = state.peer.connect(state.currentRoomId);
                             setupConnection(conn);
                         });
                     }, 500);
@@ -1057,24 +1076,45 @@ imageUpload.addEventListener('change', async (e) => {
                     showToast('Connection error occurred.');
                 }
             });
-        });
+        }
 
         function setupConnection(conn) {
-            state.connection = conn;
+            state.connections.push(conn);
             conn.on('open', () => {
                 btnSync.classList.add('bg-green-50', 'border-green-200', 'text-green-600');
-                showToast('Sync Linked!');
+                showToast(state.isHost ? 'User Linked!' : 'Sync Linked!');
             });
-            conn.on('data', handleSyncData);
+            
+            // Pass connection object to handle multi-user relays
+            conn.on('data', (data) => handleSyncData(data, conn));
+            
             conn.on('close', () => {
-                btnSync.classList.remove('bg-green-50', 'border-green-200', 'text-green-600');
-                showToast('Device disconnected');
+                state.connections = state.connections.filter(c => c !== conn);
+                if (state.connections.length === 0) {
+                    btnSync.classList.remove('bg-green-50', 'border-green-200', 'text-green-600');
+                }
+                showToast('A device disconnected');
+
+                // HOST MIGRATION: If client loses the host, try to keep the room alive
+                if (!state.isHost && state.currentRoomId) {
+                    showToast('Host left. Securing room...');
+                    state.peer.destroy();
+                    // Random delay prevents collision storms if multiple clients try to claim host at once
+                    setTimeout(() => joinOrHostRoom(), 500 + Math.random() * 1000);
+                }
             });
         }
 
         let syncRenderRAF = null;
 
-        function handleSyncData(data) {
+        function handleSyncData(data, sourceConn) {
+            // RELAY SERVER: If I am the Host, rebroadcast this to all OTHER clients!
+            if (state.isHost && sourceConn) {
+                state.connections.forEach(c => {
+                    if (c !== sourceConn && c.open) c.send(data);
+                });
+            }
+
             state.isSyncing = true; // Block echo broadcast
             
             if (data.type === 'FULL_STATE') {
@@ -1087,6 +1127,30 @@ imageUpload.addEventListener('change', async (e) => {
                     state.hostWidth = data.hostWidth;
                     state.hostHeight = data.hostHeight;
                 }
+
+                // Restore accumulated images for late joiners
+                if (data.images) {
+                    state.images = data.images;
+                    const vectorLayer = document.getElementById('vector-layer');
+                    // Clear existing images to prevent duplicates during host migration
+                    vectorLayer.querySelectorAll('img').forEach(img => img.remove());
+                    
+                    data.images.forEach(imgData => {
+                        const img = new Image();
+                        img.onload = () => {
+                            img.style.position = 'absolute';
+                            img.style.left = imgData.left;
+                            img.style.top = imgData.top;
+                            img.style.width = imgData.width;
+                            img.style.height = imgData.height;
+                            img.className = 'pointer-events-none';
+                            img.draggable = false;
+                            vectorLayer.appendChild(img);
+                        };
+                        img.src = imgData.src;
+                    });
+                }
+
                 applyBackgroundColor();
                 updateTransform(true);
             } 
@@ -1145,6 +1209,7 @@ imageUpload.addEventListener('change', async (e) => {
                 }
             }
             else if (data.type === 'IMAGE') {
+                state.images.push(data); // Save locally in case this client becomes the next Host
                 const vectorLayer = document.getElementById('vector-layer');
                 const img = new Image();
                 img.onload = () => {
