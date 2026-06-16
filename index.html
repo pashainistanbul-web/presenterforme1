@@ -249,24 +249,21 @@
 
         // --- Drawing Logic ---
 
-        function updateTransform() {
+        function updateTransform(skipBroadcast = false) {
             const vectorLayer = document.getElementById('vector-layer');
             if (window.innerWidth < window.innerHeight) {
-                let scale = 1;
-                let offsetY = 0;
-                if (state.hostWidth) {
-                    scale = window.innerHeight / state.hostWidth;
-                    offsetY = (state.hostHeight - (window.innerWidth / scale)) / 2;
-                }
-                const translateX = (window.innerWidth / scale) + offsetY;
+                const hWidth = state.hostWidth || window.innerHeight;
+                const hHeight = state.hostHeight || window.innerWidth;
+                const scale = window.innerHeight / hWidth;
+                const offsetY = (hHeight - (window.innerWidth / scale)) / 2;
                 
-                vectorLayer.style.transform = `scale(${scale}) translate(${translateX}px, 0px) rotate(90deg) translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+                vectorLayer.style.transform = `translate(0px, ${window.innerHeight}px) rotate(-90deg) scale(${scale}) translate(0px, ${-offsetY}px) translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
             } else {
                 vectorLayer.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
             }
             drawAll(); // Redraw vector strokes dynamically!
             
-            if (typeof broadcastSync === 'function') {
+            if (!skipBroadcast && typeof broadcastSync === 'function') {
                 broadcastSync({ type: 'PAN_ZOOM', panX: state.panX, panY: state.panY, zoom: state.zoom });
             }
         }
@@ -274,17 +271,18 @@
         function getVirtualPos(p) {
             // Mobile portrait acts as a full-screen mapped digitizer for the laptop
             if (window.innerWidth < window.innerHeight) {
-                // Map Top->Bottom on mobile to Left->Right on Laptop
-                let vx = p.clientY;
-                let vy = window.innerWidth - p.clientX;
+                const hWidth = state.hostWidth || window.innerHeight;
+                const hHeight = state.hostHeight || window.innerWidth;
+                const scale = window.innerHeight / hWidth;
+                const offsetY = (hHeight - (window.innerWidth / scale)) / 2;
                 
-                // Dynamically scale mobile touches to cover the entire Host Screen
-                if (state.hostWidth) {
-                    const scale = window.innerHeight / state.hostWidth;
-                    vx = vx / scale;
-                    vy = (vy / scale) + ((state.hostHeight - (window.innerWidth / scale)) / 2);
-                }
-                return { x: vx, y: vy };
+                let vx = window.innerHeight - p.clientY;
+                let vy = p.clientX;
+                
+                return { 
+                    x: vx / scale, 
+                    y: (vy / scale) + offsetY 
+                };
             }
             return { x: p.clientX, y: p.clientY };
         }
@@ -308,17 +306,15 @@
             
             ctx.scale(dpr, dpr);
             if (window.innerWidth < window.innerHeight) {
-                let scale = 1;
-                let offsetY = 0;
-                if (state.hostWidth) {
-                    scale = window.innerHeight / state.hostWidth;
-                    offsetY = (state.hostHeight - (window.innerWidth / scale)) / 2;
-                }
-                const translateX = (window.innerWidth / scale) + offsetY;
+                const hWidth = state.hostWidth || window.innerHeight;
+                const hHeight = state.hostHeight || window.innerWidth;
+                const scale = window.innerHeight / hWidth;
+                const offsetY = (hHeight - (window.innerWidth / scale)) / 2;
                 
+                ctx.translate(0, window.innerHeight);
+                ctx.rotate(-Math.PI / 2);
                 ctx.scale(scale, scale);
-                ctx.translate(translateX, 0);
-                ctx.rotate(Math.PI / 2);
+                ctx.translate(0, -offsetY);
             }
             ctx.translate(state.panX, state.panY);
             ctx.scale(state.zoom, state.zoom);
@@ -806,15 +802,14 @@ imageUpload.addEventListener('change', async (e) => {
                         drawHeight *= ratio;
                     }
 
-                    const rect = canvas.getBoundingClientRect();
                     const vCenter = getVirtualPos({ clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 });
                     
-                    // Map correctly to CSS layout absolute positioning based on the world canvas wrapper
-                    const canvasX = (vCenter.x - rect.left) * (canvas.offsetWidth / rect.width);
-                    const canvasY = (vCenter.y - rect.top) * (canvas.offsetHeight / rect.height);
+                    // Convert screen center to absolute WORLD space to perfectly anchor the drop
+                    const worldX = (vCenter.x - state.panX) / state.zoom;
+                    const worldY = (vCenter.y - state.panY) / state.zoom;
                     
-                    const x = canvasX - (drawWidth / 2);
-                    const y = canvasY - (drawHeight / 2);
+                    const x = worldX - (drawWidth / 2);
+                    const y = worldY - (drawHeight / 2);
 
                     // Apply static layout properties (CSS physical size)
                     pdfCanvas.style.left = `${x}px`;
@@ -858,15 +853,14 @@ imageUpload.addEventListener('change', async (e) => {
                         drawHeight *= ratio;
                     }
 
-                    const rect = canvas.getBoundingClientRect();
                     const vCenter = getVirtualPos({ clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 });
                     
-                    // Map correctly to CSS layout absolute positioning based on the world canvas wrapper
-                    const canvasX = (vCenter.x - rect.left) * (canvas.offsetWidth / rect.width);
-                    const canvasY = (vCenter.y - rect.top) * (canvas.offsetHeight / rect.height);
+                    // Convert screen center to absolute WORLD space to perfectly anchor the drop
+                    const worldX = (vCenter.x - state.panX) / state.zoom;
+                    const worldY = (vCenter.y - state.panY) / state.zoom;
                     
-                    const x = canvasX - (drawWidth / 2);
-                    const y = canvasY - (drawHeight / 2);
+                    const x = worldX - (drawWidth / 2);
+                    const y = worldY - (drawHeight / 2);
 
                     img.style.position = 'absolute';
                     img.style.left = `${x}px`;
@@ -979,10 +973,23 @@ imageUpload.addEventListener('change', async (e) => {
         }
 
         // --- Real-time Sync Engine (PeerJS) ---
+        let pendingPanZoom = null;
+        let panZoomRAF = null;
+
         function broadcastSync(data) {
             // isSyncing gatekeeper perfectly prevents infinite broadcasting echo loops
             if (state.connection && state.connection.open && !state.isSyncing) {
-                state.connection.send(data);
+                if (data.type === 'PAN_ZOOM') {
+                    pendingPanZoom = data;
+                    if (!panZoomRAF) {
+                        panZoomRAF = requestAnimationFrame(() => {
+                            if (state.connection.open) state.connection.send(pendingPanZoom);
+                            panZoomRAF = null;
+                        });
+                    }
+                } else {
+                    state.connection.send(data);
+                }
             }
         }
 
@@ -1065,6 +1072,8 @@ imageUpload.addEventListener('change', async (e) => {
             });
         }
 
+        let syncRenderRAF = null;
+
         function handleSyncData(data) {
             state.isSyncing = true; // Block echo broadcast
             
@@ -1079,13 +1088,20 @@ imageUpload.addEventListener('change', async (e) => {
                     state.hostHeight = data.hostHeight;
                 }
                 applyBackgroundColor();
-                updateTransform();
+                updateTransform(true);
             } 
             else if (data.type === 'PAN_ZOOM') {
                 state.panX = data.panX;
                 state.panY = data.panY;
                 state.zoom = data.zoom;
-                updateTransform();
+                
+                // Throttle incoming renders to native refresh rate (Smooth as water)
+                if (!syncRenderRAF) {
+                    syncRenderRAF = requestAnimationFrame(() => {
+                        updateTransform(true); // true = skip broadcast echo
+                        syncRenderRAF = null;
+                    });
+                }
             }
             else if (data.type === 'BG_COLOR') {
                 state.bgColor = data.bgColor;
