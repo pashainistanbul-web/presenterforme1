@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Presentation Board</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden; /* Prevent scrolling */
+            background-color: #ffffff;
+            touch-action: none; /* Prevent default touch actions like pinch-zoom */
+        }
+        canvas {
+            display: block;
+            cursor: crosshair;
+        }
+        /* Custom scrollbar for tool menus */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #d1d5db;
+            border-radius: 10px;
+        }
+        
+        /* Mobile specific transition */
+        #toolbar {
+            transition: transform 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="relative text-gray-800 font-sans select-none">
+
+    <!-- Vector Layers (CSS Transformed for infinite sharpness) -->
+    <div id="vector-layer" class="absolute inset-0 z-0 origin-top-left pointer-events-none"></div>
+    
+    <!-- Canvas (Math Transformed for infinite drawing area) -->
+    <canvas id="board" class="absolute inset-0 z-10 touch-none"></canvas>
+
+    <!-- Toolbar Area -->
+    <!-- On mobile (w < 768px), it starts translated out of view. On md+, it is fixed right. -->
+    <div id="toolbar" class="absolute right-0 top-0 h-full w-16 bg-[#f8f9fa] border-l border-gray-200 shadow-lg z-20 flex flex-col items-center py-4 gap-6 translate-x-full md:translate-x-0">
+        
+        <!-- Recording Button -->
+        <div class="relative group">
+            <button id="btn-record" class="w-10 h-10 rounded-xl bg-white shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 hover:shadow transition-all text-gray-600 focus:outline-none" title="Screen Record">
+                <svg id="icon-record-start" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3" fill="currentColor"></circle></svg>
+                <svg id="icon-record-stop" class="hidden text-red-500" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" ry="2" fill="currentColor"></rect></svg>
+            </button>
+            <div id="recording-indicator" class="hidden absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse border-2 border-white"></div>
+        </div>
+
+        <div class="w-10 h-px bg-gray-300"></div>
+
+        <!-- Pen Tools Button -->
+        <div class="relative">
+            <button id="btn-pens" class="w-10 h-10 rounded-xl bg-blue-50 shadow border border-blue-100 flex items-center justify-center text-blue-600 hover:bg-blue-100 transition-all focus:outline-none active-tool-bg" title="Pen Tools">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"></path><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path><path d="M2 2l7.586 7.586"></path><circle cx="11" cy="11" r="2"></circle></svg>
+            </button>
+            
+            <!-- Pen Menu Panel (Opens to the left) -->
+            <div id="pen-menu" class="hidden absolute right-14 top-0 bg-white border border-gray-200 rounded-xl shadow-xl w-48 p-3 flex-col gap-3">
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Brushes</div>
+                
+                <button class="tool-select flex items-center gap-2 p-2 rounded hover:bg-gray-100 w-full text-left" data-tool="ink">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778l-1.5 1.5a2 2 0 1 1-2.829-2.829l1.5-1.5a5.5 5.5 0 1 1 7.778-7.778l2-2m4.61-4.61l-2 2M22 12c0 5.523-4.477 10-10 10S2 17.523 2 12 6.477 2 12 2s10 4.477 10 10z"></path></svg>
+                    Ink Pen (Dynamic)
+                </button>
+                <button class="tool-select flex items-center gap-2 p-2 rounded hover:bg-gray-100 w-full text-left bg-gray-100" data-tool="pencil">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
+                    Pencil
+                </button>
+                <button class="tool-select flex items-center gap-2 p-2 rounded hover:bg-gray-100 w-full text-left" data-tool="soft-marker">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+                    Soft Marker
+                </button>
+                <button class="tool-select flex items-center gap-2 p-2 rounded hover:bg-gray-100 w-full text-left" data-tool="sharp-marker">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><path d="M3 9h18"></path><path d="M9 21V9"></path></svg>
+                    Sharp Marker
+                </button>
+                <button class="tool-select flex items-center gap-2 p-2 rounded hover:bg-gray-100 w-full text-left text-red-600" data-tool="eraser">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H7L3 16C2.5 15.5 2.5 14.5 3 14L13 4C13.5 3.5 14.5 3.5 15 4L20 9C20.5 9.5 20.5 10.5 20 11L11 20H20V20Z"></path></svg>
+                    Eraser
+                </button>
+
+                <div class="border-t border-gray-100 my-1"></div>
+                
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Color</div>
+                <div class="flex flex-wrap gap-2">
+                    <button class="color-btn w-6 h-6 rounded-full bg-black ring-2 ring-offset-1 ring-blue-500" data-color="#000000"></button>
+                    <button class="color-btn w-6 h-6 rounded-full bg-red-500 border border-gray-200" data-color="#ef4444"></button>
+                    <button class="color-btn w-6 h-6 rounded-full bg-blue-500 border border-gray-200" data-color="#3b82f6"></button>
+                    <button class="color-btn w-6 h-6 rounded-full bg-green-500 border border-gray-200" data-color="#22c55e"></button>
+                    <button class="color-btn w-6 h-6 rounded-full bg-yellow-400 border border-gray-200" data-color="#facc15"></button>
+                    <button class="color-btn w-6 h-6 rounded-full bg-purple-500 border border-gray-200" data-color="#a855f7"></button>
+                </div>
+
+                <div class="border-t border-gray-100 my-1"></div>
+
+                <div class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Size</div>
+                <input type="range" id="size-slider" min="1" max="50" value="3" class="w-full accent-blue-500">
+            </div>
+        </div>
+
+        <div class="w-10 h-px bg-gray-300"></div>
+
+        <!-- Undo / Redo Buttons -->
+        <button id="btn-undo" class="w-10 h-10 rounded-xl bg-white shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 hover:shadow transition-all text-gray-600 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed" title="Undo">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"></path><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path></svg>
+        </button>
+        <button id="btn-redo" class="w-10 h-10 rounded-xl bg-white shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 hover:shadow transition-all text-gray-600 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed" title="Redo">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"></path><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"></path></svg>
+        </button>
+
+        <div class="w-10 h-px bg-gray-300"></div>
+
+        <!-- BG Color Button -->
+        <div class="relative">
+            <button id="btn-bg-color" class="w-10 h-10 rounded-xl bg-white shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 hover:shadow transition-all text-gray-600 focus:outline-none" title="Background Color">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 2h-15C3.1 2 2 3.1 2 4.5v15C2 20.9 3.1 22 4.5 22h15c1.4 0 2.5-1.1 2.5-2.5v-15C22 3.1 20.9 2 19.5 2Z"></path><path d="M12 2v20"></path><path d="M2 12h20"></path><rect x="4" y="4" width="6" height="6" fill="currentColor"></rect></svg>
+            </button>
+            <input type="color" id="bg-color-picker" class="absolute left-0 top-0 w-full h-full opacity-0 cursor-pointer" value="#ffffff">
+        </div>
+
+        <div class="w-10 h-px bg-gray-300"></div>
+
+        <!-- Add Photo Button -->
+        <button id="btn-image" class="w-10 h-10 rounded-xl bg-white shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 hover:shadow transition-all text-gray-600 focus:outline-none" title="Add Photo">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline><path d="M12 9v6m-3-3h6" stroke="currentColor" class="text-blue-500" stroke-width="3"></path></svg>
+        </button>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+        <script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
+        <input type="file" id="image-upload" accept="image/*, application/pdf" class="hidden">
+
+        <div class="mt-auto mb-4 text-gray-400 text-xs text-center" id="mobile-hint" style="writing-mode: vertical-rl; transform: rotate(180deg);">
+            Swipe ←
+        </div>
+
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="fixed top-4 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-4 py-2 rounded shadow-lg transition-opacity duration-300 opacity-0 pointer-events-none z-50">
+        Message
+    </div>
+
+    <script>
+        // --- Setup & State ---
+        const canvas = document.getElementById('board');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Optimize for saving/restoring data
+        
+        let state = {
+            zoom: 1,
+            panX: 0,
+            panY: 0,
+            isPanning: false,
+            panStartX: 0,
+            panStartY: 0,
+
+            isDrawing: false,
+            tool: 'pencil', // pencil, ink, soft-marker, sharp-marker, eraser
+            color: '#000000',
+            size: 3,
+            lastX: 0,
+            lastY: 0,
+            
+            // For ink pen dynamics
+            lastTime: 0,
+            currentLineWidth: 3,
+            
+            isRecording: false,
+            mediaRecorder: null,
+            recordedChunks: [],
+
+            strokes: [],
+            redoStrokes: [],
+            currentStroke: null,
+            bgColor: '#ffffff'
+        };
+
+        // UI Elements
+        const toolbar = document.getElementById('toolbar');
+        const penMenu = document.getElementById('pen-menu');
+        const btnPens = document.getElementById('btn-pens');
+        const btnImage = document.getElementById('btn-image');
+        const imageUpload = document.getElementById('image-upload');
+        const btnUndo = document.getElementById('btn-undo');
+        const btnRedo = document.getElementById('btn-redo');
+        const bgColorPicker = document.getElementById('bg-color-picker');
+        const btnRecord = document.getElementById('btn-record');
+        const iconRecordStart = document.getElementById('icon-record-start');
+        const iconRecordStop = document.getElementById('icon-record-stop');
+        const recordingIndicator = document.getElementById('recording-indicator');
+        const toast = document.getElementById('toast');
+        const mobileHint = document.getElementById('mobile-hint');
+
+        // Handle high DPI displays for sharp drawing
+        function resizeCanvas() {
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = window.innerWidth * dpr;
+            canvas.height = window.innerHeight * dpr;
+            canvas.style.width = `${window.innerWidth}px`;
+            canvas.style.height = `${window.innerHeight}px`;
+            
+            document.body.style.backgroundColor = state.bgColor;
+            if (typeof drawAll === 'function') drawAll();
+            
+            // Hide hint on desktop
+            if (window.innerWidth >= 768) {
+                mobileHint.classList.add('hidden');
+            } else {
+                mobileHint.classList.remove('hidden');
+            }
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function showToast(msg, duration = 3000) {
+            toast.textContent = msg;
+            toast.classList.remove('opacity-0');
+            setTimeout(() => {
+                toast.classList.add('opacity-0');
+            }, duration);
+        }
+
+        // --- Drawing Logic ---
+
+        function updateTransform() {
+            const vectorLayer = document.getElementById('vector-layer');
+            vectorLayer.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+            drawAll(); // Redraw vector strokes dynamically!
+        }
+
+        function getCoordinates(e) {
+            let clientX, clientY;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            
+            // Convert exact screen pixel to logical WORLD coordinate based on zoom and pan
+            return {
+                x: (clientX - state.panX) / state.zoom,
+                y: (clientY - state.panY) / state.zoom
+            };
+        }
+
+        function drawAll() {
+            const dpr = window.devicePixelRatio || 1;
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.scale(dpr, dpr);
+            ctx.translate(state.panX, state.panY);
+            ctx.scale(state.zoom, state.zoom);
+
+            const allStrokes = [...state.strokes];
+            if (state.currentStroke) allStrokes.push(state.currentStroke);
+
+            for (let stroke of allStrokes) {
+                if (stroke.points.length === 0) continue;
+
+                ctx.lineJoin = 'round';
+                ctx.lineCap = stroke.tool === 'sharp-marker' ? 'square' : 'round';
+                ctx.strokeStyle = stroke.color;
+                ctx.fillStyle = stroke.color;
+                
+                // Screen-relative width: A size 3 pen always looks exactly 3 physical pixels on screen!
+                ctx.lineWidth = stroke.worldSize; 
+                ctx.shadowBlur = 0;
+                
+                ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
+                ctx.globalAlpha = 1.0;
+
+                if (stroke.tool === 'soft-marker') {
+                    ctx.globalAlpha = 0.2;
+                    ctx.shadowBlur = stroke.worldSize / 2;
+                    ctx.shadowColor = stroke.color;
+                } else if (stroke.tool === 'sharp-marker') {
+                    ctx.globalAlpha = 0.4;
+                }
+
+                if (stroke.tool === 'ink') {
+                    for (let i = 1; i < stroke.points.length; i++) {
+                        ctx.beginPath();
+                        ctx.lineWidth = stroke.points[i].width;
+                        ctx.moveTo(stroke.points[i-1].x, stroke.points[i-1].y);
+                        ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+                        ctx.stroke();
+                    }
+                } else {
+                    ctx.beginPath();
+                    ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+                    for (let i = 1; i < stroke.points.length; i++) {
+                        ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+                    }
+                    ctx.stroke();
+                }
+            }
+            ctx.restore();
+        }
+
+        function startDrawing(e) {
+            if (e.target !== canvas) return;
+            penMenu.classList.add('hidden');
+
+            if (e.button === 1 || e.ctrlKey || (e.touches && e.touches.length >= 2)) {
+                state.isPanning = true;
+                const ptX = e.touches && e.touches.length > 0 ? e.touches[0].clientX : e.clientX;
+                const ptY = e.touches && e.touches.length > 0 ? e.touches[0].clientY : e.clientY;
+                state.panStartX = ptX - state.panX;
+                state.panStartY = ptY - state.panY;
+                canvas.style.cursor = 'grabbing';
+                return;
+            }
+            
+            state.isDrawing = true;
+            const { x, y } = getCoordinates(e);
+            
+            state.currentStroke = {
+                tool: state.tool,
+                color: state.color,
+                worldSize: state.size / state.zoom, // Math scaling trick
+                points: [{ x, y, width: (state.size / state.zoom) }]
+            };
+            
+            state.lastX = x;
+            state.lastY = y;
+            state.lastTime = performance.now();
+            state.currentLineWidth = state.currentStroke.worldSize;
+
+            drawAll();
+        }
+
+        function stopDrawing() {
+            if (state.isPanning) {
+                state.isPanning = false;
+                canvas.style.cursor = 'crosshair';
+                return;
+            }
+            if (!state.isDrawing) return;
+            state.isDrawing = false;
+            
+            if (state.currentStroke) {
+                state.strokes.push(state.currentStroke);
+                state.currentStroke = null;
+                saveState(); // Trigger vector history
+            }
+        }
+
+        // --- Crisp PDF Rendering Engine ---
+        let renderTimeout;
+        async function renderCrispPDF(pdfCanvas, currentZoom) {
+            const page = pdfCanvas.pdfPage;
+            if (!page) return;
+
+            // Calculate exact physical pixels needed for razor-sharp rendering at current zoom
+            const dpr = window.devicePixelRatio || 1;
+            let physicalWidth = pdfCanvas.baseDrawWidth * currentZoom * dpr;
+            let physicalHeight = pdfCanvas.baseDrawHeight * currentZoom * dpr;
+
+            // Safety limit to prevent browser canvas crashes on extreme zooms (Caps at 8K resolution)
+            const MAX_DIM = 8000;
+            if (physicalWidth > MAX_DIM || physicalHeight > MAX_DIM) {
+                const limitRatio = Math.min(MAX_DIM / physicalWidth, MAX_DIM / physicalHeight);
+                physicalWidth *= limitRatio;
+                physicalHeight *= limitRatio;
+            }
+
+            // DOUBLE BUFFERING: Render to a hidden offscreen canvas first to PREVENT FLICKERING!
+            const offscreen = document.createElement('canvas');
+            offscreen.width = physicalWidth;
+            offscreen.height = physicalHeight;
+            const offCtx = offscreen.getContext('2d', { alpha: false }); // Optimize for no transparency
+
+            // Clear to transparency so custom BG colors show through the PDF!
+            offCtx.clearRect(0, 0, physicalWidth, physicalHeight);
+
+            // Calculate required PDF scale to match the new crisp physical pixels
+            const baseViewport = page.getViewport({ scale: 1.0 });
+            const requiredScale = physicalWidth / baseViewport.width;
+            const renderViewport = page.getViewport({ scale: requiredScale });
+
+            // Cancel any ongoing render if the user is zooming really fast
+            if (pdfCanvas.renderTask) {
+                try { await pdfCanvas.renderTask.cancel(); } catch(e) {}
+            }
+
+            // Render to the hidden offscreen canvas
+            pdfCanvas.renderTask = page.render({ canvasContext: offCtx, viewport: renderViewport });
+            try {
+                await pdfCanvas.renderTask.promise;
+                
+                // CRITICAL FIX: Only wipe and update the visible canvas AFTER rendering is 100% complete
+                pdfCanvas.width = physicalWidth;
+                pdfCanvas.height = physicalHeight;
+                const ctx = pdfCanvas.getContext('2d');
+                ctx.drawImage(offscreen, 0, 0);
+
+            } catch (e) {
+                if(e.name !== 'RenderingCancelledException') console.error("PDF Render failed", e);
+            }
+        }
+
+        function triggerHighResRender() {
+            clearTimeout(renderTimeout);
+            renderTimeout = setTimeout(() => {
+                const pdfs = document.querySelectorAll('.pdf-document');
+                pdfs.forEach(pdfCanvas => renderCrispPDF(pdfCanvas, state.zoom));
+            }, 100); // Reduced delay for more responsive snappy renders
+        }
+
+        // --- Zoom & Pan Engine (Wheel/Trackpad) ---
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            
+            if (e.ctrlKey || e.metaKey) {
+                // Pinch-to-zoom or Ctrl + Scroll wheel
+                const oldZoom = state.zoom;
+                
+                // Exponential Scale for BUTTERY SMOOTH Google Maps-like Zooming
+                const zoomIntensity = 0.0025; // Loosened sensitivity
+                state.zoom *= Math.exp(-e.deltaY * zoomIntensity);
+                
+                state.zoom = Math.max(0.05, Math.min(20, state.zoom)); // Zoom limit: 5% to 2000%
+                
+                // Adjust Pan to zoom directly toward the mouse cursor smoothly
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+                
+                const scaleRatio = state.zoom / oldZoom;
+                
+                // CRITICAL FIX: Include current pan offset in the calculation so it anchors exactly 
+                // to your cursor in world space, eliminating the diagonal drift!
+                state.panX -= (mouseX - state.panX) * (scaleRatio - 1);
+                state.panY -= (mouseY - state.panY) * (scaleRatio - 1);
+                
+                updateTransform();
+                triggerHighResRender(); // Schedule high-res redraw
+            } else {
+                // Standard Trackpad 2-finger pan / Mouse wheel pan
+                state.panX -= e.deltaX;
+                state.panY -= e.deltaY;
+                updateTransform();
+            }
+        }, { passive: false });
+
+        // --- Vector-Based Undo / Redo & State Management ---
+        function saveState() {
+            state.redoStrokes = []; // Clear redo stack on new action
+            updateUndoRedoUI();
+        }
+
+        function updateUndoRedoUI() {
+            btnUndo.disabled = state.strokes.length === 0;
+            btnRedo.disabled = state.redoStrokes.length === 0;
+            
+            btnUndo.style.opacity = btnUndo.disabled ? '0.5' : '1';
+            btnRedo.style.opacity = btnRedo.disabled ? '0.5' : '1';
+        }
+
+        btnUndo.addEventListener('click', () => {
+            if (state.strokes.length > 0) {
+                state.redoStrokes.push(state.strokes.pop());
+                updateUndoRedoUI();
+                drawAll(); // Instantly recalculate & redraw math vectors!
+            }
+        });
+
+        btnRedo.addEventListener('click', () => {
+            if (state.redoStrokes.length > 0) {
+                state.strokes.push(state.redoStrokes.pop());
+                updateUndoRedoUI();
+                drawAll();
+            }
+        });
+
+        // --- Background Color ---
+        bgColorPicker.addEventListener('input', (e) => {
+            state.bgColor = e.target.value;
+            applyBackgroundColor();
+        });
+
+        function applyBackgroundColor() {
+            document.body.style.backgroundColor = state.bgColor;
+        }
+
+        function draw(e, isTap = false) {
+            if (state.isPanning) {
+                e.preventDefault();
+                const ptX = e.touches && e.touches.length > 0 ? e.touches[0].clientX : e.clientX;
+                const ptY = e.touches && e.touches.length > 0 ? e.touches[0].clientY : e.clientY;
+                state.panX = ptX - state.panStartX;
+                state.panY = ptY - state.panStartY;
+                updateTransform();
+                return;
+            }
+
+            if (!state.isDrawing || !state.currentStroke) return;
+            e.preventDefault();
+
+            const { x, y } = getCoordinates(e);
+            const timeNow = performance.now();
+
+            let targetWidth = state.currentStroke.worldSize;
+
+            if (state.tool === 'ink') {
+                const dt = timeNow - state.lastTime;
+                const dx = x - state.lastX;
+                const dy = y - state.lastY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                let velocity = distance / (dt || 1);
+                // Dynamically adjust width based on speed, scaled perfectly to world coordinates!
+                let dynamicWidth = state.currentStroke.worldSize * 1.5 - (velocity * 2 / state.zoom);
+                dynamicWidth = Math.max(state.currentStroke.worldSize * 0.2, Math.min(state.currentStroke.worldSize * 2, dynamicWidth));
+                
+                state.currentLineWidth += (dynamicWidth - state.currentLineWidth) * 0.2;
+                targetWidth = state.currentLineWidth;
+            } else if (state.tool === 'eraser') {
+                targetWidth = state.currentStroke.worldSize * 2.5; // Make eraser nice and thick
+            }
+
+            // Append mathematically to vector path
+            state.currentStroke.points.push({ x, y, width: targetWidth });
+            
+            state.lastX = x;
+            state.lastY = y;
+            state.lastTime = timeNow;
+
+            drawAll(); // Render the new path instantly via Math Engine
+        }
+
+        // Canvas Event Listeners
+        // Using pointer events for better mouse/touch unification where possible
+        canvas.addEventListener('pointerdown', startDrawing);
+        canvas.addEventListener('pointermove', draw);
+        canvas.addEventListener('pointerup', stopDrawing);
+        canvas.addEventListener('pointerout', stopDrawing);
+        
+        // Prevent default touch behavior on canvas to ensure drawing works perfectly
+        canvas.addEventListener('touchstart', (e) => { if(e.target === canvas) e.preventDefault(); }, {passive: false});
+
+        // --- UI Interactions ---
+
+        // Toggle Pen Menu
+        btnPens.addEventListener('click', (e) => {
+            e.stopPropagation();
+            penMenu.classList.toggle('hidden');
+        });
+
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!btnPens.contains(e.target) && !penMenu.contains(e.target)) {
+                penMenu.classList.add('hidden');
+            }
+        });
+
+        // Tool Selection
+        document.querySelectorAll('.tool-select').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                // Update UI
+                document.querySelectorAll('.tool-select').forEach(b => b.classList.remove('bg-gray-100'));
+                e.currentTarget.classList.add('bg-gray-100');
+                
+                // Update State
+                state.tool = e.currentTarget.dataset.tool;
+                
+                // Change main button styling based on tool
+                if(state.tool === 'eraser') {
+                     btnPens.classList.remove('bg-blue-50', 'border-blue-100', 'text-blue-600');
+                     btnPens.classList.add('bg-red-50', 'border-red-100', 'text-red-600');
+                } else {
+                     btnPens.classList.remove('bg-red-50', 'border-red-100', 'text-red-600');
+                     btnPens.classList.add('bg-blue-50', 'border-blue-100', 'text-blue-600');
+                }
+                
+                penMenu.classList.add('hidden');
+            });
+        });
+
+        // Color Selection
+        document.querySelectorAll('.color-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('ring-2', 'ring-offset-1', 'ring-blue-500'));
+                e.currentTarget.classList.add('ring-2', 'ring-offset-1', 'ring-blue-500');
+                state.color = e.currentTarget.dataset.color;
+            });
+        });
+
+        // Size Selection
+        document.getElementById('size-slider').addEventListener('input', (e) => {
+            state.size = parseInt(e.target.value);
+        });
+
+        // --- Image Upload ---
+        btnImage.addEventListener('click', () => {
+            imageUpload.click();
+        });
+
+imageUpload.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const vectorLayer = document.getElementById('vector-layer');
+
+            // --- PDF HANDLING (DYNAMIC CRISP RENDER ENGINE) ---
+            if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+                showToast('Parsing PDF...', 4000);
+                try {
+                    if (window.pdfjsLib && !window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
+                        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                    }
+
+                    const arrayBuffer = await file.arrayBuffer();
+                    const typedarray = new Uint8Array(arrayBuffer);
+                    
+                    const loadingTask = window.pdfjsLib.getDocument({ data: typedarray });
+                    const pdf = await loadingTask.promise;
+                    const page = await pdf.getPage(1);
+                    
+                    // Create a dedicated dynamic canvas for this PDF in the vector layer
+                    const pdfCanvas = document.createElement('canvas');
+                    pdfCanvas.className = 'pdf-document absolute pointer-events-none';
+                    
+                    const viewport = page.getViewport({ scale: 1.0 });
+                    
+                    // Fit to screen calculations
+                    let drawWidth = viewport.width;
+                    let drawHeight = viewport.height;
+                    const dpr = window.devicePixelRatio || 1;
+                    const maxDim = Math.min(canvas.width, canvas.height) * 0.9 / dpr;
+
+                    if (drawWidth > maxDim || drawHeight > maxDim) {
+                        const ratio = Math.min(maxDim / drawWidth, maxDim / drawHeight);
+                        drawWidth *= ratio;
+                        drawHeight *= ratio;
+                    }
+
+                    const rect = canvas.getBoundingClientRect();
+                    const canvasX = ((window.innerWidth / 2) - rect.left) * (canvas.offsetWidth / rect.width);
+                    const canvasY = ((window.innerHeight / 2) - rect.top) * (canvas.offsetHeight / rect.height);
+                    
+                    const x = canvasX - (drawWidth / 2);
+                    const y = canvasY - (drawHeight / 2);
+
+                    // Apply static layout properties (CSS physical size)
+                    pdfCanvas.style.left = `${x}px`;
+                    pdfCanvas.style.top = `${y}px`;
+                    pdfCanvas.style.width = `${drawWidth}px`;
+                    pdfCanvas.style.height = `${drawHeight}px`;
+                    pdfCanvas.style.transformOrigin = '0 0';
+
+                    // Attach the PDF mathematical page and base dimensions for dynamic re-rendering later
+                    pdfCanvas.pdfPage = page;
+                    pdfCanvas.baseDrawWidth = drawWidth;
+                    pdfCanvas.baseDrawHeight = drawHeight;
+
+                    vectorLayer.appendChild(pdfCanvas);
+                    
+                    // Trigger the first crisp render exactly at our current zoom
+                    await renderCrispPDF(pdfCanvas, state.zoom);
+                    
+                    showToast('PDF added successfully!');
+                } catch (err) {
+                    console.error('PDF Error:', err);
+                    showToast('Error loading PDF');
+                }
+                imageUpload.value = '';
+                return;
+            }
+
+            // --- IMAGE HANDLING (DOM LAYERING) ---
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const dpr = window.devicePixelRatio || 1;
+                    let drawWidth = img.width;
+                    let drawHeight = img.height;
+                    const maxDim = Math.min(canvas.width, canvas.height) * 0.9 / dpr;
+
+                    if (drawWidth > maxDim || drawHeight > maxDim) {
+                        const ratio = Math.min(maxDim / drawWidth, maxDim / drawHeight);
+                        drawWidth *= ratio;
+                        drawHeight *= ratio;
+                    }
+
+                    const rect = canvas.getBoundingClientRect();
+                    const canvasX = ((window.innerWidth / 2) - rect.left) * (canvas.offsetWidth / rect.width);
+                    const canvasY = ((window.innerHeight / 2) - rect.top) * (canvas.offsetHeight / rect.height);
+                    
+                    const x = canvasX - (drawWidth / 2);
+                    const y = canvasY - (drawHeight / 2);
+
+                    img.style.position = 'absolute';
+                    img.style.left = `${x}px`;
+                    img.style.top = `${y}px`;
+                    img.style.width = `${drawWidth}px`;
+                    img.style.height = `${drawHeight}px`;
+                    img.className = 'pointer-events-none'; // Critical: allows drawing freely over images!
+                    img.draggable = false; // prevent accidental dragging
+
+                    vectorLayer.appendChild(img);
+                    
+                    showToast('Image added to board');
+                };
+                img.onerror = () => {
+                    showToast('Failed to load image');
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // --- Screen Recording ---
+        btnRecord.addEventListener('click', async () => {
+            if (state.isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        });
+
+        async function startRecording() {
+            try {
+                // Capture the actual screen/tab so we capture the crisp DOM SVGs and the drawing Canvas together!
+                const canvasStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { displaySurface: "browser" },
+                    audio: false
+                });
+                
+                // Options: try webm first, then mp4, or let browser decide
+                let options = { mimeType: 'video/webm;codecs=vp9' };
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options = { mimeType: 'video/webm' };
+                    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                        options = {}; // Fallback
+                    }
+                }
+
+                state.mediaRecorder = new MediaRecorder(canvasStream, options);
+                state.recordedChunks = [];
+
+                state.mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) {
+                        state.recordedChunks.push(e.data);
+                    }
+                };
+
+                state.mediaRecorder.onstop = () => {
+                    const blob = new Blob(state.recordedChunks, {
+                        type: options.mimeType || 'video/webm'
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    document.body.appendChild(a);
+                    a.style = 'display: none';
+                    a.href = url;
+                    a.download = `presentation-${new Date().toISOString().slice(0,10)}.webm`;
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    showToast('Recording saved!');
+                };
+
+                state.mediaRecorder.start();
+                state.isRecording = true;
+                
+                // Update UI
+                iconRecordStart.classList.add('hidden');
+                iconRecordStop.classList.remove('hidden');
+                recordingIndicator.classList.remove('hidden');
+                btnRecord.classList.add('bg-red-50', 'border-red-200');
+                showToast('Recording started');
+
+            } catch (err) {
+                console.error("Error starting recording:", err);
+                showToast('Failed to start recording');
+            }
+        }
+
+        function stopRecording() {
+            if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+                state.mediaRecorder.stop();
+                state.isRecording = false;
+                
+                // Update UI
+                iconRecordStart.classList.remove('hidden');
+                iconRecordStop.classList.add('hidden');
+                recordingIndicator.classList.add('hidden');
+                btnRecord.classList.remove('bg-red-50', 'border-red-200');
+            }
+        }
+
+        // --- Mobile Swipe Logic ---
+        let touchStartX = 0;
+        let touchStartY = 0;
+        const edgeThreshold = 40; // Pixels from edge to trigger swipe
+
+        document.addEventListener('touchstart', (e) => {
+            if(e.touches.length > 0) {
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+            }
+        }, {passive: true});
+
+        document.addEventListener('touchend', (e) => {
+            if (window.innerWidth >= 768) return; // Only apply on mobile/tablet screens
+
+            if(e.changedTouches.length > 0) {
+                const touchEndX = e.changedTouches[0].clientX;
+                const swipeDistX = touchEndX - touchStartX;
+                const swipeDistY = Math.abs(e.changedTouches[0].clientY - touchStartY);
+                
+                // Ensure it's mostly a horizontal swipe
+                if (swipeDistY > Math.abs(swipeDistX)) return;
+
+                // Open: Swipe left near the right edge
+                if (swipeDistX < -40 && touchStartX > window.innerWidth - edgeThreshold) {
+                    toolbar.classList.remove('translate-x-full');
+                }
+                
+                // Close: Swipe right starting from anywhere near the open toolbar
+                if (swipeDistX > 40 && touchStartX > window.innerWidth - 100) {
+                    toolbar.classList.add('translate-x-full');
+                    penMenu.classList.add('hidden'); // Close menu if open
+                }
+            }
+        }, {passive: true});
+
+    </script>
+</body>
+</html>
