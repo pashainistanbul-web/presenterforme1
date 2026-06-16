@@ -197,6 +197,8 @@
             peer: null,
             connection: null,
             isSyncing: false,
+            hostWidth: null,
+            hostHeight: null,
 
             // Touch/Pointer Map for Pinch Zoom
             pointers: new Map(),
@@ -250,7 +252,15 @@
         function updateTransform() {
             const vectorLayer = document.getElementById('vector-layer');
             if (window.innerWidth < window.innerHeight) {
-                vectorLayer.style.transform = `translate(0px, ${window.innerHeight}px) rotate(-90deg) translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+                let scale = 1;
+                let offsetY = 0;
+                if (state.hostWidth) {
+                    scale = window.innerHeight / state.hostWidth;
+                    offsetY = (state.hostHeight - (window.innerWidth / scale)) / 2;
+                }
+                const translateX = (window.innerWidth / scale) + offsetY;
+                
+                vectorLayer.style.transform = `scale(${scale}) translate(${translateX}px, 0px) rotate(90deg) translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
             } else {
                 vectorLayer.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
             }
@@ -262,10 +272,19 @@
         }
 
         function getVirtualPos(p) {
-            // Treat mobile portrait orientation as landscape rotated by 90 degrees
-            // Top of phone = Right of Laptop, Bottom = Left, Left = Top, Right = Bottom.
+            // Mobile portrait acts as a full-screen mapped digitizer for the laptop
             if (window.innerWidth < window.innerHeight) {
-                return { x: window.innerHeight - p.clientY, y: p.clientX };
+                // Map Top->Bottom on mobile to Left->Right on Laptop
+                let vx = p.clientY;
+                let vy = window.innerWidth - p.clientX;
+                
+                // Dynamically scale mobile touches to cover the entire Host Screen
+                if (state.hostWidth) {
+                    const scale = window.innerHeight / state.hostWidth;
+                    vx = vx / scale;
+                    vy = (vy / scale) + ((state.hostHeight - (window.innerWidth / scale)) / 2);
+                }
+                return { x: vx, y: vy };
             }
             return { x: p.clientX, y: p.clientY };
         }
@@ -289,8 +308,17 @@
             
             ctx.scale(dpr, dpr);
             if (window.innerWidth < window.innerHeight) {
-                ctx.translate(0, window.innerHeight);
-                ctx.rotate(-Math.PI / 2);
+                let scale = 1;
+                let offsetY = 0;
+                if (state.hostWidth) {
+                    scale = window.innerHeight / state.hostWidth;
+                    offsetY = (state.hostHeight - (window.innerWidth / scale)) / 2;
+                }
+                const translateX = (window.innerWidth / scale) + offsetY;
+                
+                ctx.scale(scale, scale);
+                ctx.translate(translateX, 0);
+                ctx.rotate(Math.PI / 2);
             }
             ctx.translate(state.panX, state.panY);
             ctx.scale(state.zoom, state.zoom);
@@ -519,8 +547,11 @@
                 let virtMouseY = e.clientY - rect.top;
                 
                 if (window.innerWidth < window.innerHeight) {
-                    virtMouseX = window.innerHeight - (e.clientY - rect.top);
-                    virtMouseY = e.clientX - rect.left;
+                    let scale = state.hostWidth ? (window.innerHeight / state.hostWidth) : 1;
+                    let offsetY = state.hostWidth ? ((state.hostHeight - (window.innerWidth / scale)) / 2) : 0;
+                    
+                    virtMouseX = virtMouseY / scale;
+                    virtMouseY = ((window.innerWidth - (e.clientX - rect.left)) / scale) + offsetY;
                 }
                 
                 const scaleRatio = state.zoom / oldZoom;
@@ -535,8 +566,9 @@
             } else {
                 // Standard Trackpad 2-finger pan / Mouse wheel pan
                 if (window.innerWidth < window.innerHeight) {
-                    state.panX -= -e.deltaY;
-                    state.panY -= e.deltaX;
+                    let scale = state.hostWidth ? (window.innerHeight / state.hostWidth) : 1;
+                    state.panX -= (e.deltaY / scale);
+                    state.panY -= (-e.deltaX / scale);
                 } else {
                     state.panX -= e.deltaX;
                     state.panY -= e.deltaY;
@@ -775,12 +807,11 @@ imageUpload.addEventListener('change', async (e) => {
                     }
 
                     const rect = canvas.getBoundingClientRect();
-                    let cx = window.innerWidth / 2;
-                    let cy = window.innerHeight / 2;
-                    if (window.innerWidth < window.innerHeight) { cx = window.innerHeight / 2; cy = window.innerWidth / 2; }
+                    const vCenter = getVirtualPos({ clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 });
                     
-                    const canvasX = (cx - rect.left) * (canvas.offsetWidth / rect.width);
-                    const canvasY = (cy - rect.top) * (canvas.offsetHeight / rect.height);
+                    // Map correctly to CSS layout absolute positioning based on the world canvas wrapper
+                    const canvasX = (vCenter.x - rect.left) * (canvas.offsetWidth / rect.width);
+                    const canvasY = (vCenter.y - rect.top) * (canvas.offsetHeight / rect.height);
                     
                     const x = canvasX - (drawWidth / 2);
                     const y = canvasY - (drawHeight / 2);
@@ -828,12 +859,11 @@ imageUpload.addEventListener('change', async (e) => {
                     }
 
                     const rect = canvas.getBoundingClientRect();
-                    let cx = window.innerWidth / 2;
-                    let cy = window.innerHeight / 2;
-                    if (window.innerWidth < window.innerHeight) { cx = window.innerHeight / 2; cy = window.innerWidth / 2; }
+                    const vCenter = getVirtualPos({ clientX: window.innerWidth / 2, clientY: window.innerHeight / 2 });
                     
-                    const canvasX = (cx - rect.left) * (canvas.offsetWidth / rect.width);
-                    const canvasY = (cy - rect.top) * (canvas.offsetHeight / rect.height);
+                    // Map correctly to CSS layout absolute positioning based on the world canvas wrapper
+                    const canvasX = (vCenter.x - rect.left) * (canvas.offsetWidth / rect.width);
+                    const canvasY = (vCenter.y - rect.top) * (canvas.offsetHeight / rect.height);
                     
                     const x = canvasX - (drawWidth / 2);
                     const y = canvasY - (drawHeight / 2);
@@ -991,7 +1021,11 @@ imageUpload.addEventListener('change', async (e) => {
                 showToast('Device joined your room!', 3000);
                 // Host shares the entire canvas state immediately upon a new connection
                 setTimeout(() => {
-                    broadcastSync({ type: 'FULL_STATE', strokes: state.strokes, bgColor: state.bgColor, panX: state.panX, panY: state.panY, zoom: state.zoom });
+                    broadcastSync({ 
+                        type: 'FULL_STATE', strokes: state.strokes, bgColor: state.bgColor, 
+                        panX: state.panX, panY: state.panY, zoom: state.zoom,
+                        hostWidth: window.innerWidth, hostHeight: window.innerHeight 
+                    });
                 }, 500);
             });
 
@@ -1040,6 +1074,10 @@ imageUpload.addEventListener('change', async (e) => {
                 state.panX = data.panX;
                 state.panY = data.panY;
                 state.zoom = data.zoom;
+                if (data.hostWidth) {
+                    state.hostWidth = data.hostWidth;
+                    state.hostHeight = data.hostHeight;
+                }
                 applyBackgroundColor();
                 updateTransform();
             } 
