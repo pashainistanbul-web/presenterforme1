@@ -167,11 +167,33 @@
             config: { broadcast: { ack: false } },
         });
 
+        // --- Safe Broadcast & Throttling System to prevent App Hangs ---
+        let isConnected = false;
+        let lastMoveTime = 0;
+        let pendingPoints = [];
+        let lastPanTime = 0;
+
+        function safeBroadcast(event, payload) {
+            if (!isConnected) return; // Prevent blocking if not connected
+            try {
+                // If payload is huge (e.g., base64 image > 800kb), Supabase will crash the connection.
+                const payloadSize = JSON.stringify(payload).length;
+                if (payloadSize > 800000) {
+                    console.warn("Payload too large to broadcast:", event);
+                    showToast("Notice: Element too large to sync to mobile");
+                    return;
+                }
+                boardChannel.send({ type: 'broadcast', event: event, payload: payload }).catch(err => {
+                    console.warn('Broadcast failed silently', err);
+                });
+            } catch(e) { console.error('SafeBroadcast Error', e); }
+        }
+
         boardChannel
             .on('broadcast', { event: 'sync-state' }, (payload) => {
-                state.strokes = payload.payload.strokes;
-                state.redoStrokes = payload.payload.redoStrokes;
-                state.bgColor = payload.payload.bgColor;
+                state.strokes = payload.payload.strokes || state.strokes;
+                state.redoStrokes = payload.payload.redoStrokes || state.redoStrokes;
+                state.bgColor = payload.payload.bgColor || state.bgColor;
                 applyBackgroundColor();
                 updateUndoRedoUI();
                 drawAll();
@@ -182,7 +204,11 @@
             })
             .on('broadcast', { event: 'draw-move' }, (payload) => {
                 if (state.currentStroke) {
-                    state.currentStroke.points.push(payload.payload.point);
+                    if (payload.payload.points) {
+                        state.currentStroke.points.push(...payload.payload.points); // Handle batched throttle
+                    } else if (payload.payload.point) {
+                        state.currentStroke.points.push(payload.payload.point); // Legacy fallback
+                    }
                     drawAll();
                 }
             })
@@ -213,15 +239,16 @@
                 document.getElementById('vector-layer').appendChild(img);
             })
             .subscribe((status) => {
-                if (status === 'SUBSCRIBED') showToast('Realtime Connected!');
+                if (status === 'SUBSCRIBED') {
+                    isConnected = true;
+                    showToast('Realtime Connected!');
+                } else {
+                    isConnected = false;
+                }
             });
 
         function broadcastFullState() {
-            boardChannel.send({
-                type: 'broadcast',
-                event: 'sync-state',
-                payload: { strokes: state.strokes, redoStrokes: state.redoStrokes, bgColor: state.bgColor }
-            });
+            safeBroadcast('sync-state', { strokes: state.strokes, redoStrokes: state.redoStrokes, bgColor: state.bgColor });
         }
 
         let state = {
@@ -408,8 +435,10 @@
             state.lastY = y;
             state.lastTime = performance.now();
             state.currentLineWidth = state.currentStroke.worldSize;
+            
+            pendingPoints = []; // Reset throttle queue
 
-            boardChannel.send({ type: 'broadcast', event: 'draw-start', payload: { stroke: state.currentStroke } });
+            safeBroadcast('draw-start', { stroke: state.currentStroke });
 
             drawAll();
         }
@@ -424,11 +453,16 @@
             state.isDrawing = false;
             
             if (state.currentStroke) {
+                // Flush remaining points before stopping
+                if (pendingPoints.length > 0) {
+                    safeBroadcast('draw-move', { points: pendingPoints });
+                    pendingPoints = [];
+                }
                 state.strokes.push(state.currentStroke);
                 state.currentStroke = null;
                 saveState(); // Trigger vector history
                 
-                boardChannel.send({ type: 'broadcast', event: 'draw-stop', payload: {} });
+                safeBroadcast('draw-stop', {});
             }
         }
 
@@ -529,7 +563,12 @@
                 updateTransform();
             }
             
-            boardChannel.send({ type: 'broadcast', event: 'view-change', payload: { zoom: state.zoom, panX: state.panX, panY: state.panY } });
+            // Throttle pan/zoom broadcasts to 30fps to prevent socket flood
+            const now = performance.now();
+            if (now - lastPanTime > 33) {
+                safeBroadcast('view-change', { zoom: state.zoom, panX: state.panX, panY: state.panY });
+                lastPanTime = now;
+            }
         }, { passive: false });
 
         // --- Vector-Based Undo / Redo & State Management ---
@@ -584,7 +623,11 @@
                 state.panY = ptY - state.panStartY;
                 updateTransform();
                 
-                boardChannel.send({ type: 'broadcast', event: 'view-change', payload: { zoom: state.zoom, panX: state.panX, panY: state.panY } });
+                const now = performance.now();
+                if (now - lastPanTime > 33) {
+                    safeBroadcast('view-change', { zoom: state.zoom, panX: state.panX, panY: state.panY });
+                    lastPanTime = now;
+                }
                 return;
             }
 
@@ -621,7 +664,13 @@
             state.lastY = y;
             state.lastTime = timeNow;
 
-            boardChannel.send({ type: 'broadcast', event: 'draw-move', payload: { point: newPoint } });
+            // Batch points to prevent crashing the WebSocket rate limits
+            pendingPoints.push(newPoint);
+            if (timeNow - lastMoveTime > 30) {
+                safeBroadcast('draw-move', { points: pendingPoints });
+                pendingPoints = [];
+                lastMoveTime = timeNow;
+            }
 
             drawAll(); // Render the new path instantly via Math Engine
         }
@@ -798,11 +847,7 @@ imageUpload.addEventListener('change', async (e) => {
 
                     vectorLayer.appendChild(img);
                     
-                    boardChannel.send({
-                        type: 'broadcast',
-                        event: 'add-image',
-                        payload: { src: img.src, x, y, width: drawWidth, height: drawHeight }
-                    });
+                    safeBroadcast('add-image', { src: img.src, x, y, width: drawWidth, height: drawHeight });
                     
                     showToast('Image added to board');
                 };
