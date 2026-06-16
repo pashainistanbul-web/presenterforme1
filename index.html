@@ -923,40 +923,66 @@ imageUpload.addEventListener('change', async (e) => {
             }
         }
 
+        const peerConfig = {
+            config: {
+                'iceServers': [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+            }
+        };
+
         btnSync.addEventListener('click', () => {
             if (state.connection && state.connection.open) {
                 showToast('Already connected!');
                 return;
             }
 
-            const roomId = prompt("Enter a Sync ID to join a session, or leave blank to CREATE a new one:");
-            if (roomId === null) return; // Cancelled
+            const roomName = prompt("Enter a simple Room Name (e.g., 'home', 'wifi', or '123'):");
+            if (!roomName || roomName.trim() === "") return;
 
-            if (roomId.trim() === "") {
-                // You are the Host
-                state.peer = new Peer();
-                state.peer.on('open', (id) => {
-                    prompt("You are the Host! Copy this Sync ID and enter it on your other device:", id);
-                    showToast('Waiting for connection...', 4000);
-                });
-                
-                state.peer.on('connection', (conn) => {
-                    setupConnection(conn);
-                    showToast('Device connected!', 3000);
-                    // Share entire existing canvas state to new connection
+            // Prefix to avoid global PeerJS collisions with other internet users
+            const globalRoomId = "presenter-sync-room-" + roomName.trim().toLowerCase();
+            showToast('Searching network...', 2000);
+
+            // Attempt to claim this room name and become the Host
+            state.peer = new Peer(globalRoomId, peerConfig);
+
+            state.peer.on('open', (id) => {
+                showToast(`Room '${roomName}' created! Waiting for other device...`, 4000);
+            });
+            
+            state.peer.on('connection', (conn) => {
+                setupConnection(conn);
+                showToast('Device joined your room!', 3000);
+                // Host shares the entire canvas state immediately upon a new connection
+                setTimeout(() => {
+                    broadcastSync({ type: 'FULL_STATE', strokes: state.strokes, bgColor: state.bgColor, panX: state.panX, panY: state.panY, zoom: state.zoom });
+                }, 500);
+            });
+
+            // If the name is already claimed, the room exists! Join it as a Client.
+            state.peer.on('error', (err) => {
+                if (err.type === 'unavailable-id') {
+                    showToast(`Room found! Connecting to '${roomName}'...`);
+                    
+                    // Destroy the failed host attempt
+                    state.peer.destroy();
+                    
+                    // Re-instantiate as a normal client (random ID)
                     setTimeout(() => {
-                        broadcastSync({ type: 'FULL_STATE', strokes: state.strokes, bgColor: state.bgColor, panX: state.panX, panY: state.panY, zoom: state.zoom });
+                        state.peer = new Peer(peerConfig);
+                        state.peer.on('open', () => {
+                            const conn = state.peer.connect(globalRoomId);
+                            setupConnection(conn);
+                        });
                     }, 500);
-                });
-            } else {
-                // You are the Client connecting
-                state.peer = new Peer();
-                state.peer.on('open', () => {
-                    const conn = state.peer.connect(roomId.trim());
-                    setupConnection(conn);
-                    showToast('Connecting...');
-                });
-            }
+                } else {
+                    console.error("PeerJS Error:", err);
+                    showToast('Connection error occurred.');
+                }
+            });
         });
 
         function setupConnection(conn) {
