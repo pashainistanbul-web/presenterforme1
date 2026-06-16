@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Presentation Board</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
         body, html {
             margin: 0;
@@ -137,6 +136,14 @@
         <button id="btn-image" class="w-10 h-10 rounded-xl bg-white shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 hover:shadow transition-all text-gray-600 focus:outline-none" title="Add Photo">
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline><path d="M12 9v6m-3-3h6" stroke="currentColor" class="text-blue-500" stroke-width="3"></path></svg>
         </button>
+        
+        <div class="w-10 h-px bg-gray-300"></div>
+
+        <button id="btn-sync" class="w-10 h-10 rounded-xl bg-white shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 hover:shadow transition-all text-gray-600 focus:outline-none" title="Sync Devices">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+        </button>
+
+        <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
         <script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
         <input type="file" id="image-upload" accept="image/*, application/pdf" class="hidden">
@@ -157,100 +164,6 @@
         const canvas = document.getElementById('board');
         const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Optimize for saving/restoring data
         
-        // --- Supabase Realtime Engine ---
-        // TODO: Create a free Supabase project and put your URL / Anon Key here
-        const SUPABASE_URL = 'https://onqjbcdsfphrqvgaetlw.supabase.co';
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ucWpiY2RzZnBocnF2Z2FldGx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MDAwNDAsImV4cCI6MjA5NzE3NjA0MH0.FGPR1QwcSk-eUFpqtg41maLESTFeXkFFU69qbYS43m8';
-        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-        
-        const boardChannel = supabase.channel('board-room', {
-            config: { broadcast: { ack: false } },
-        });
-
-        // --- Safe Broadcast & Throttling System to prevent App Hangs ---
-        let isConnected = false;
-        let lastMoveTime = 0;
-        let pendingPoints = [];
-        let lastPanTime = 0;
-
-        function safeBroadcast(event, payload) {
-            if (!isConnected) return; // Prevent blocking if not connected
-            try {
-                // If payload is huge (e.g., base64 image > 800kb), Supabase will crash the connection.
-                const payloadSize = JSON.stringify(payload).length;
-                if (payloadSize > 800000) {
-                    console.warn("Payload too large to broadcast:", event);
-                    showToast("Notice: Element too large to sync to mobile");
-                    return;
-                }
-                boardChannel.send({ type: 'broadcast', event: event, payload: payload }).catch(err => {
-                    console.warn('Broadcast failed silently', err);
-                });
-            } catch(e) { console.error('SafeBroadcast Error', e); }
-        }
-
-        boardChannel
-            .on('broadcast', { event: 'sync-state' }, (payload) => {
-                state.strokes = payload.payload.strokes || state.strokes;
-                state.redoStrokes = payload.payload.redoStrokes || state.redoStrokes;
-                state.bgColor = payload.payload.bgColor || state.bgColor;
-                applyBackgroundColor();
-                updateUndoRedoUI();
-                drawAll();
-            })
-            .on('broadcast', { event: 'draw-start' }, (payload) => {
-                state.currentStroke = payload.payload.stroke;
-                drawAll();
-            })
-            .on('broadcast', { event: 'draw-move' }, (payload) => {
-                if (state.currentStroke) {
-                    if (payload.payload.points) {
-                        state.currentStroke.points.push(...payload.payload.points); // Handle batched throttle
-                    } else if (payload.payload.point) {
-                        state.currentStroke.points.push(payload.payload.point); // Legacy fallback
-                    }
-                    drawAll();
-                }
-            })
-            .on('broadcast', { event: 'draw-stop' }, (payload) => {
-                if (state.currentStroke) {
-                    state.strokes.push(state.currentStroke);
-                    state.currentStroke = null;
-                    updateUndoRedoUI();
-                    drawAll();
-                }
-            })
-            .on('broadcast', { event: 'view-change' }, (payload) => {
-                state.zoom = payload.payload.zoom;
-                state.panX = payload.payload.panX;
-                state.panY = payload.payload.panY;
-                updateTransform();
-            })
-            .on('broadcast', { event: 'add-image' }, (payload) => {
-                const img = new Image();
-                img.style.position = 'absolute';
-                img.style.left = `${payload.payload.x}px`;
-                img.style.top = `${payload.payload.y}px`;
-                img.style.width = `${payload.payload.width}px`;
-                img.style.height = `${payload.payload.height}px`;
-                img.className = 'pointer-events-none';
-                img.draggable = false;
-                img.src = payload.payload.src;
-                document.getElementById('vector-layer').appendChild(img);
-            })
-            .subscribe((status) => {
-                if (status === 'SUBSCRIBED') {
-                    isConnected = true;
-                    showToast('Realtime Connected!');
-                } else {
-                    isConnected = false;
-                }
-            });
-
-        function broadcastFullState() {
-            safeBroadcast('sync-state', { strokes: state.strokes, redoStrokes: state.redoStrokes, bgColor: state.bgColor });
-        }
-
         let state = {
             zoom: 1,
             panX: 0,
@@ -277,7 +190,13 @@
             strokes: [],
             redoStrokes: [],
             currentStroke: null,
-            bgColor: '#ffffff'
+            bgColor: '#ffffff',
+
+            // Sync variables
+            remoteStroke: null,
+            peer: null,
+            connection: null,
+            isSyncing: false
         };
 
         // UI Elements
@@ -295,6 +214,7 @@
         const recordingIndicator = document.getElementById('recording-indicator');
         const toast = document.getElementById('toast');
         const mobileHint = document.getElementById('mobile-hint');
+        const btnSync = document.getElementById('btn-sync');
 
         // Handle high DPI displays for sharp drawing
         function resizeCanvas() {
@@ -332,6 +252,10 @@
             const vectorLayer = document.getElementById('vector-layer');
             vectorLayer.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
             drawAll(); // Redraw vector strokes dynamically!
+            
+            if (typeof broadcastSync === 'function') {
+                broadcastSync({ type: 'PAN_ZOOM', panX: state.panX, panY: state.panY, zoom: state.zoom });
+            }
         }
 
         function getCoordinates(e) {
@@ -363,6 +287,7 @@
 
             const allStrokes = [...state.strokes];
             if (state.currentStroke) allStrokes.push(state.currentStroke);
+            if (state.remoteStroke) allStrokes.push(state.remoteStroke);
 
             for (let stroke of allStrokes) {
                 if (stroke.points.length === 0) continue;
@@ -435,12 +360,20 @@
             state.lastY = y;
             state.lastTime = performance.now();
             state.currentLineWidth = state.currentStroke.worldSize;
-            
-            pendingPoints = []; // Reset throttle queue
-
-            safeBroadcast('draw-start', { stroke: state.currentStroke });
 
             drawAll();
+            
+            if (typeof broadcastSync === 'function') {
+                broadcastSync({
+                    type: 'DRAW_START',
+                    tool: state.tool,
+                    color: state.color,
+                    worldSize: state.currentStroke.worldSize,
+                    x: x,
+                    y: y,
+                    width: state.currentStroke.points[0].width
+                });
+            }
         }
 
         function stopDrawing() {
@@ -453,16 +386,10 @@
             state.isDrawing = false;
             
             if (state.currentStroke) {
-                // Flush remaining points before stopping
-                if (pendingPoints.length > 0) {
-                    safeBroadcast('draw-move', { points: pendingPoints });
-                    pendingPoints = [];
-                }
                 state.strokes.push(state.currentStroke);
                 state.currentStroke = null;
                 saveState(); // Trigger vector history
-                
-                safeBroadcast('draw-stop', {});
+                if (typeof broadcastSync === 'function') broadcastSync({ type: 'DRAW_END' });
             }
         }
 
@@ -562,13 +489,6 @@
                 state.panY -= e.deltaY;
                 updateTransform();
             }
-            
-            // Throttle pan/zoom broadcasts to 30fps to prevent socket flood
-            const now = performance.now();
-            if (now - lastPanTime > 33) {
-                safeBroadcast('view-change', { zoom: state.zoom, panX: state.panX, panY: state.panY });
-                lastPanTime = now;
-            }
         }, { passive: false });
 
         // --- Vector-Based Undo / Redo & State Management ---
@@ -590,7 +510,7 @@
                 state.redoStrokes.push(state.strokes.pop());
                 updateUndoRedoUI();
                 drawAll(); // Instantly recalculate & redraw math vectors!
-                broadcastFullState();
+                if (typeof broadcastSync === 'function') broadcastSync({ type: 'UNDO' });
             }
         });
 
@@ -599,7 +519,7 @@
                 state.strokes.push(state.redoStrokes.pop());
                 updateUndoRedoUI();
                 drawAll();
-                broadcastFullState();
+                if (typeof broadcastSync === 'function') broadcastSync({ type: 'REDO' });
             }
         });
 
@@ -607,7 +527,9 @@
         bgColorPicker.addEventListener('input', (e) => {
             state.bgColor = e.target.value;
             applyBackgroundColor();
-            broadcastFullState();
+            if (typeof broadcastSync === 'function') {
+                broadcastSync({ type: 'BG_COLOR', bgColor: state.bgColor });
+            }
         });
 
         function applyBackgroundColor() {
@@ -622,12 +544,6 @@
                 state.panX = ptX - state.panStartX;
                 state.panY = ptY - state.panStartY;
                 updateTransform();
-                
-                const now = performance.now();
-                if (now - lastPanTime > 33) {
-                    safeBroadcast('view-change', { zoom: state.zoom, panX: state.panX, panY: state.panY });
-                    lastPanTime = now;
-                }
                 return;
             }
 
@@ -657,22 +573,17 @@
             }
 
             // Append mathematically to vector path
-            const newPoint = { x, y, width: targetWidth };
-            state.currentStroke.points.push(newPoint);
+            state.currentStroke.points.push({ x, y, width: targetWidth });
             
             state.lastX = x;
             state.lastY = y;
             state.lastTime = timeNow;
 
-            // Batch points to prevent crashing the WebSocket rate limits
-            pendingPoints.push(newPoint);
-            if (timeNow - lastMoveTime > 30) {
-                safeBroadcast('draw-move', { points: pendingPoints });
-                pendingPoints = [];
-                lastMoveTime = timeNow;
-            }
-
             drawAll(); // Render the new path instantly via Math Engine
+            
+            if (typeof broadcastSync === 'function') {
+                broadcastSync({ type: 'DRAW_MOVE', x: x, y: y, width: targetWidth });
+            }
         }
 
         // Canvas Event Listeners
@@ -847,7 +758,16 @@ imageUpload.addEventListener('change', async (e) => {
 
                     vectorLayer.appendChild(img);
                     
-                    safeBroadcast('add-image', { src: img.src, x, y, width: drawWidth, height: drawHeight });
+                    if (typeof broadcastSync === 'function') {
+                        broadcastSync({
+                            type: 'IMAGE',
+                            src: event.target.result,
+                            left: img.style.left,
+                            top: img.style.top,
+                            width: img.style.width,
+                            height: img.style.height
+                        });
+                    }
                     
                     showToast('Image added to board');
                 };
@@ -936,6 +856,141 @@ imageUpload.addEventListener('change', async (e) => {
                 recordingIndicator.classList.add('hidden');
                 btnRecord.classList.remove('bg-red-50', 'border-red-200');
             }
+        }
+
+        // --- Real-time Sync Engine (PeerJS) ---
+        function broadcastSync(data) {
+            // isSyncing gatekeeper perfectly prevents infinite broadcasting echo loops
+            if (state.connection && state.connection.open && !state.isSyncing) {
+                state.connection.send(data);
+            }
+        }
+
+        btnSync.addEventListener('click', () => {
+            if (state.connection && state.connection.open) {
+                showToast('Already connected!');
+                return;
+            }
+
+            const roomId = prompt("Enter a Sync ID to join a session, or leave blank to CREATE a new one:");
+            if (roomId === null) return; // Cancelled
+
+            if (roomId.trim() === "") {
+                // You are the Host
+                state.peer = new Peer();
+                state.peer.on('open', (id) => {
+                    prompt("You are the Host! Copy this Sync ID and enter it on your other device:", id);
+                    showToast('Waiting for connection...', 4000);
+                });
+                
+                state.peer.on('connection', (conn) => {
+                    setupConnection(conn);
+                    showToast('Device connected!', 3000);
+                    // Share entire existing canvas state to new connection
+                    setTimeout(() => {
+                        broadcastSync({ type: 'FULL_STATE', strokes: state.strokes, bgColor: state.bgColor, panX: state.panX, panY: state.panY, zoom: state.zoom });
+                    }, 500);
+                });
+            } else {
+                // You are the Client connecting
+                state.peer = new Peer();
+                state.peer.on('open', () => {
+                    const conn = state.peer.connect(roomId.trim());
+                    setupConnection(conn);
+                    showToast('Connecting...');
+                });
+            }
+        });
+
+        function setupConnection(conn) {
+            state.connection = conn;
+            conn.on('open', () => {
+                btnSync.classList.add('bg-green-50', 'border-green-200', 'text-green-600');
+                showToast('Sync Linked!');
+            });
+            conn.on('data', handleSyncData);
+            conn.on('close', () => {
+                btnSync.classList.remove('bg-green-50', 'border-green-200', 'text-green-600');
+                showToast('Device disconnected');
+            });
+        }
+
+        function handleSyncData(data) {
+            state.isSyncing = true; // Block echo broadcast
+            
+            if (data.type === 'FULL_STATE') {
+                state.strokes = data.strokes;
+                state.bgColor = data.bgColor;
+                state.panX = data.panX;
+                state.panY = data.panY;
+                state.zoom = data.zoom;
+                applyBackgroundColor();
+                updateTransform();
+            } 
+            else if (data.type === 'PAN_ZOOM') {
+                state.panX = data.panX;
+                state.panY = data.panY;
+                state.zoom = data.zoom;
+                updateTransform();
+            }
+            else if (data.type === 'BG_COLOR') {
+                state.bgColor = data.bgColor;
+                applyBackgroundColor();
+            }
+            else if (data.type === 'DRAW_START') {
+                state.remoteStroke = {
+                    tool: data.tool,
+                    color: data.color,
+                    worldSize: data.worldSize,
+                    points: [{ x: data.x, y: data.y, width: data.width }]
+                };
+                drawAll();
+            }
+            else if (data.type === 'DRAW_MOVE') {
+                if (state.remoteStroke) {
+                    state.remoteStroke.points.push({ x: data.x, y: data.y, width: data.width });
+                    drawAll();
+                }
+            }
+            else if (data.type === 'DRAW_END') {
+                if (state.remoteStroke) {
+                    state.strokes.push(state.remoteStroke);
+                    state.remoteStroke = null;
+                    drawAll();
+                    updateUndoRedoUI();
+                }
+            }
+            else if (data.type === 'UNDO') {
+                if (state.strokes.length > 0) {
+                    state.redoStrokes.push(state.strokes.pop());
+                    updateUndoRedoUI();
+                    drawAll();
+                }
+            }
+            else if (data.type === 'REDO') {
+                if (state.redoStrokes.length > 0) {
+                    state.strokes.push(state.redoStrokes.pop());
+                    updateUndoRedoUI();
+                    drawAll();
+                }
+            }
+            else if (data.type === 'IMAGE') {
+                const vectorLayer = document.getElementById('vector-layer');
+                const img = new Image();
+                img.onload = () => {
+                    img.style.position = 'absolute';
+                    img.style.left = data.left;
+                    img.style.top = data.top;
+                    img.style.width = data.width;
+                    img.style.height = data.height;
+                    img.className = 'pointer-events-none';
+                    img.draggable = false;
+                    vectorLayer.appendChild(img);
+                };
+                img.src = data.src;
+            }
+
+            state.isSyncing = false;
         }
 
         // --- Mobile Swipe Logic ---
