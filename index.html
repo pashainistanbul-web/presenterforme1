@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Presentation Board</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
         body, html {
             margin: 0;
@@ -156,6 +157,73 @@
         const canvas = document.getElementById('board');
         const ctx = canvas.getContext('2d', { willReadFrequently: true }); // Optimize for saving/restoring data
         
+        // --- Supabase Realtime Engine ---
+        // TODO: Create a free Supabase project and put your URL / Anon Key here
+        const SUPABASE_URL = 'https://onqjbcdsfphrqvgaetlw.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9ucWpiY2RzZnBocnF2Z2FldGx3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MDAwNDAsImV4cCI6MjA5NzE3NjA0MH0.FGPR1QwcSk-eUFpqtg41maLESTFeXkFFU69qbYS43m8';
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        
+        const boardChannel = supabase.channel('board-room', {
+            config: { broadcast: { ack: false } },
+        });
+
+        boardChannel
+            .on('broadcast', { event: 'sync-state' }, (payload) => {
+                state.strokes = payload.payload.strokes;
+                state.redoStrokes = payload.payload.redoStrokes;
+                state.bgColor = payload.payload.bgColor;
+                applyBackgroundColor();
+                updateUndoRedoUI();
+                drawAll();
+            })
+            .on('broadcast', { event: 'draw-start' }, (payload) => {
+                state.currentStroke = payload.payload.stroke;
+                drawAll();
+            })
+            .on('broadcast', { event: 'draw-move' }, (payload) => {
+                if (state.currentStroke) {
+                    state.currentStroke.points.push(payload.payload.point);
+                    drawAll();
+                }
+            })
+            .on('broadcast', { event: 'draw-stop' }, (payload) => {
+                if (state.currentStroke) {
+                    state.strokes.push(state.currentStroke);
+                    state.currentStroke = null;
+                    updateUndoRedoUI();
+                    drawAll();
+                }
+            })
+            .on('broadcast', { event: 'view-change' }, (payload) => {
+                state.zoom = payload.payload.zoom;
+                state.panX = payload.payload.panX;
+                state.panY = payload.payload.panY;
+                updateTransform();
+            })
+            .on('broadcast', { event: 'add-image' }, (payload) => {
+                const img = new Image();
+                img.style.position = 'absolute';
+                img.style.left = `${payload.payload.x}px`;
+                img.style.top = `${payload.payload.y}px`;
+                img.style.width = `${payload.payload.width}px`;
+                img.style.height = `${payload.payload.height}px`;
+                img.className = 'pointer-events-none';
+                img.draggable = false;
+                img.src = payload.payload.src;
+                document.getElementById('vector-layer').appendChild(img);
+            })
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') showToast('Realtime Connected!');
+            });
+
+        function broadcastFullState() {
+            boardChannel.send({
+                type: 'broadcast',
+                event: 'sync-state',
+                payload: { strokes: state.strokes, redoStrokes: state.redoStrokes, bgColor: state.bgColor }
+            });
+        }
+
         let state = {
             zoom: 1,
             panX: 0,
@@ -341,6 +409,8 @@
             state.lastTime = performance.now();
             state.currentLineWidth = state.currentStroke.worldSize;
 
+            boardChannel.send({ type: 'broadcast', event: 'draw-start', payload: { stroke: state.currentStroke } });
+
             drawAll();
         }
 
@@ -357,6 +427,8 @@
                 state.strokes.push(state.currentStroke);
                 state.currentStroke = null;
                 saveState(); // Trigger vector history
+                
+                boardChannel.send({ type: 'broadcast', event: 'draw-stop', payload: {} });
             }
         }
 
@@ -456,6 +528,8 @@
                 state.panY -= e.deltaY;
                 updateTransform();
             }
+            
+            boardChannel.send({ type: 'broadcast', event: 'view-change', payload: { zoom: state.zoom, panX: state.panX, panY: state.panY } });
         }, { passive: false });
 
         // --- Vector-Based Undo / Redo & State Management ---
@@ -477,6 +551,7 @@
                 state.redoStrokes.push(state.strokes.pop());
                 updateUndoRedoUI();
                 drawAll(); // Instantly recalculate & redraw math vectors!
+                broadcastFullState();
             }
         });
 
@@ -485,6 +560,7 @@
                 state.strokes.push(state.redoStrokes.pop());
                 updateUndoRedoUI();
                 drawAll();
+                broadcastFullState();
             }
         });
 
@@ -492,6 +568,7 @@
         bgColorPicker.addEventListener('input', (e) => {
             state.bgColor = e.target.value;
             applyBackgroundColor();
+            broadcastFullState();
         });
 
         function applyBackgroundColor() {
@@ -506,6 +583,8 @@
                 state.panX = ptX - state.panStartX;
                 state.panY = ptY - state.panStartY;
                 updateTransform();
+                
+                boardChannel.send({ type: 'broadcast', event: 'view-change', payload: { zoom: state.zoom, panX: state.panX, panY: state.panY } });
                 return;
             }
 
@@ -535,11 +614,14 @@
             }
 
             // Append mathematically to vector path
-            state.currentStroke.points.push({ x, y, width: targetWidth });
+            const newPoint = { x, y, width: targetWidth };
+            state.currentStroke.points.push(newPoint);
             
             state.lastX = x;
             state.lastY = y;
             state.lastTime = timeNow;
+
+            boardChannel.send({ type: 'broadcast', event: 'draw-move', payload: { point: newPoint } });
 
             drawAll(); // Render the new path instantly via Math Engine
         }
@@ -715,6 +797,12 @@ imageUpload.addEventListener('change', async (e) => {
                     img.draggable = false; // prevent accidental dragging
 
                     vectorLayer.appendChild(img);
+                    
+                    boardChannel.send({
+                        type: 'broadcast',
+                        event: 'add-image',
+                        payload: { src: img.src, x, y, width: drawWidth, height: drawHeight }
+                    });
                     
                     showToast('Image added to board');
                 };
