@@ -915,6 +915,22 @@ imageUpload.addEventListener('change', async (e) => {
                     audio: false
                 });
                 
+                // Capture microphone audio for voice recording
+                const audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: true
+                });
+
+                // Combine the screen video track with the microphone audio track
+                const combinedStream = new MediaStream([
+                    ...canvasStream.getVideoTracks(),
+                    ...audioStream.getAudioTracks()
+                ]);
+                
+                // Automatically stop recording if the user clicks the browser's native "Stop sharing" button
+                canvasStream.getVideoTracks()[0].onended = () => {
+                    stopRecording();
+                };
+                
                 // Options: try webm first, then mp4, or let browser decide
                 let options = { mimeType: 'video/webm;codecs=vp9' };
                 if (!MediaRecorder.isTypeSupported(options.mimeType)) {
@@ -924,7 +940,7 @@ imageUpload.addEventListener('change', async (e) => {
                     }
                 }
 
-                state.mediaRecorder = new MediaRecorder(canvasStream, options);
+                state.mediaRecorder = new MediaRecorder(combinedStream, options);
                 state.recordedChunks = [];
 
                 state.mediaRecorder.ondataavailable = (e) => {
@@ -965,16 +981,24 @@ imageUpload.addEventListener('change', async (e) => {
         }
 
         function stopRecording() {
-            if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
-                state.mediaRecorder.stop();
-                state.isRecording = false;
+            if (state.mediaRecorder) {
+                if (state.mediaRecorder.state !== 'inactive') {
+                    state.mediaRecorder.stop();
+                }
                 
-                // Update UI
-                iconRecordStart.classList.remove('hidden');
-                iconRecordStop.classList.add('hidden');
-                recordingIndicator.classList.add('hidden');
-                btnRecord.classList.remove('bg-red-50', 'border-red-200');
+                // Explicitly stop all media tracks (turns off the microphone and screen recording lights/icons)
+                if (state.mediaRecorder.stream) {
+                    state.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                }
             }
+            
+            state.isRecording = false;
+            
+            // Update UI
+            iconRecordStart.classList.remove('hidden');
+            iconRecordStop.classList.add('hidden');
+            recordingIndicator.classList.add('hidden');
+            btnRecord.classList.remove('bg-red-50', 'border-red-200');
         }
 
         // --- Real-time Sync Engine (PeerJS) ---
