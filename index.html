@@ -1047,7 +1047,8 @@ imageUpload.addEventListener('change', async (e) => {
                         conn.send({ 
                             type: 'FULL_STATE', strokes: state.strokes, bgColor: state.bgColor, 
                             panX: state.panX, panY: state.panY, zoom: state.zoom,
-                            hostWidth: window.innerWidth, hostHeight: window.innerHeight,
+                            hostWidth: state.hostWidth || window.innerWidth, // CRITICAL FIX: Use adopted laptop dimension
+                            hostHeight: state.hostHeight || window.innerHeight,
                             images: state.images // Send all accumulated images!
                         });
                     }
@@ -1083,6 +1084,14 @@ imageUpload.addEventListener('change', async (e) => {
             conn.on('open', () => {
                 btnSync.classList.add('bg-green-50', 'border-green-200', 'text-green-600');
                 showToast(state.isHost ? 'User Linked!' : 'Sync Linked!');
+                
+                // CRITICAL FIX: Instantly broadcast screen dimensions so mobile locks onto the laptop's canvas size!
+                conn.send({
+                    type: 'SCREEN_INFO',
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    isLandscape: window.innerWidth > window.innerHeight
+                });
             });
             
             // Pass connection object to handle multi-user relays
@@ -1117,7 +1126,15 @@ imageUpload.addEventListener('change', async (e) => {
 
             state.isSyncing = true; // Block echo broadcast
             
-            if (data.type === 'FULL_STATE') {
+            if (data.type === 'SCREEN_INFO') {
+                // If this is a mobile (portrait) and a laptop (landscape) joins, lock onto the laptop's dimensions perfectly!
+                if (window.innerWidth < window.innerHeight && data.isLandscape) {
+                    state.hostWidth = data.width;
+                    state.hostHeight = data.height;
+                    updateTransform(true);
+                }
+            }
+            else if (data.type === 'FULL_STATE') {
                 state.strokes = data.strokes;
                 state.bgColor = data.bgColor;
                 state.panX = data.panX;
